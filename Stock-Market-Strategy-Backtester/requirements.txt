@@ -1,0 +1,9 @@
+pandas
+numpy
+matplotlib
+yfinance
+streamlit
+nltk
+transformers
+torch
+requests

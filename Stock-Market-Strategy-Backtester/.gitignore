@@ -1,0 +1,18 @@
+# Virtual environment
+.venv/
+
+# Python cache
+__pycache__/
+*.pyc
+.venv/
+
+# Streamlit secrets (Do NOT commit API keys)
+.streamlit/secrets.toml
+.streamlit/secrets*
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# VS Code settings
+.vscode/
