@@ -1,0 +1,18 @@
+
+=========================================
+PERFORMANCE SUMMARY
+=========================================
+
+Initial Capital : Rs. 100,000.00
+
+Final Portfolio : Rs. 78,449.87
+
+Strategy Return : -21.55 %
+
+Buy & Hold Return : -3.12 %
+
+Outperformance : -18.43 %
+
+Signals Generated : 39
+
+Execution Time : 0.05 sec
