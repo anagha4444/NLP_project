@@ -89,6 +89,12 @@ if "news_status" not in st.session_state:
 if "news_summary" not in st.session_state:
     st.session_state.news_summary = ""
 
+if "is_ai_summary" not in st.session_state:
+    st.session_state.is_ai_summary = False
+
+if "summarizer_error" not in st.session_state:
+    st.session_state.summarizer_error = ""
+
 # -----------------------------
 # Run Backtest & Analysis
 # -----------------------------
@@ -102,6 +108,8 @@ if run:
     st.session_state.sentiment_metrics = None
     st.session_state.news_status = ""
     st.session_state.news_summary = ""
+    st.session_state.is_ai_summary = False
+    st.session_state.summarizer_error = ""
 
     error_msg = None
 
@@ -151,8 +159,9 @@ if run:
                     st.session_state.news_df = processed_news_df
                     st.session_state.sentiment_metrics = sent_metrics
                     
-                    summary_text, _ = generate_news_summary(processed_news_df)
+                    summary_text, is_ai_sum = generate_news_summary(processed_news_df)
                     st.session_state.news_summary = summary_text
+                    st.session_state.is_ai_summary = is_ai_sum
 
             except ValueError as e:
                 error_msg = f"❌ {e}"
@@ -186,6 +195,7 @@ sentiment_metrics = st.session_state.sentiment_metrics
 news_status = st.session_state.news_status
 news_summary = st.session_state.news_summary
 company_name = get_company_name(ticker)
+currency_symbol = "₹" if (ticker.endswith(".NS") or ticker.endswith(".BO")) else "$"
 
 # -----------------------------
 # Top Metrics
@@ -201,11 +211,11 @@ m5.metric("📅 Trading Days", len(df))
 st.divider()
 
 m6, m7, m8, m9, m10 = st.columns(5)
-m6.metric("💵 Initial Capital", f"₹{capital:,.0f}")
-m7.metric("📈 Latest Price", f"₹{summary['latest_price']:.2f}")
-m8.metric("💼 Portfolio Value", f"₹{summary['final_portfolio']:,.0f}")
-m9.metric("📈 Highest Price", f"₹{summary['highest']:.2f}")
-m10.metric("📉 Lowest Price", f"₹{summary['lowest']:.2f}")
+m6.metric("💵 Initial Capital", f"{currency_symbol}{capital:,.0f}")
+m7.metric("📈 Latest Price", f"{currency_symbol}{summary['latest_price']:.2f}")
+m8.metric("💼 Portfolio Value", f"{currency_symbol}{summary['final_portfolio']:,.0f}")
+m9.metric("📈 Highest Price", f"{currency_symbol}{summary['highest']:.2f}")
+m10.metric("📉 Lowest Price", f"{currency_symbol}{summary['lowest']:.2f}")
 
 st.divider()
 
@@ -234,8 +244,8 @@ with overview_tab:
         ],
         "Value": [
             f"{ticker} ({company_name})",
-            f"₹{capital:,.2f}",
-            f"₹{summary['final_portfolio']:,.2f}",
+            f"{currency_symbol}{capital:,.2f}",
+            f"{currency_symbol}{summary['final_portfolio']:,.2f}",
             f"{summary['strategy_return']:.2f}%",
             f"{summary['buy_hold_return']:.2f}%",
             f"{summary['outperformance']:.2f}%",
@@ -312,32 +322,41 @@ with ai_analysis_tab:
     if news_status:
         st.info(news_status)
         
-    tech_info = analyze_current_technical_condition(df)
+    tech_info = analyze_current_technical_condition(df, currency_symbol=currency_symbol)
     
     if sentiment_metrics is None:
         sentiment_metrics = {
-            "avg_positive": 0.33,
-            "avg_neutral": 0.34,
-            "avg_negative": 0.33,
+            "avg_positive": 0.0,
+            "avg_neutral": 0.0,
+            "avg_negative": 0.0,
             "aggregate_score": 0.0,
-            "qualitative_label": "Neutral / Unavailable",
+            "qualitative_label": "Unavailable",
             "pos_count": 0,
             "neu_count": 0,
             "neg_count": 0,
             "total_articles": 0,
-            "is_finbert_used": False
+            "is_finbert_used": False,
+            "available": False,
+            "finbert_error": "No news articles retrieved"
         }
 
-    market_context = compute_market_context_score(summary, tech_info, sentiment_metrics)
+    market_context = compute_market_context_score(summary, tech_info, sentiment_metrics, currency_symbol=currency_symbol)
     
+    is_finbert = sentiment_metrics.get("is_finbert_used", False)
+    if sentiment_metrics.get("total_articles", 0) > 0 and not is_finbert:
+        err_detail = sentiment_metrics.get("finbert_error", "Model unavailable")
+        st.warning(f"⚠️ **FinBERT Unavailable:** Using Rule-Based Financial Lexicon Fallback. Reason: `{err_detail}`")
+    elif sentiment_metrics.get("total_articles", 0) == 0:
+        st.warning("⚠️ **No News Articles Available:** News sentiment is excluded from the Market Context Score calculation.")
+
     # --------------------------------------------------
     # 1. Current Market Snapshot
     # --------------------------------------------------
     st.markdown("### 📊 Current Market Snapshot")
     snap1, snap2, snap3, snap4 = st.columns(4)
-    snap1.metric("Current Price", f"₹{tech_info['current_price']:,.2f}")
-    snap2.metric("20-Day MA (MA20)", f"₹{tech_info['ma20']:,.2f}")
-    snap3.metric("50-Day MA (MA50)", f"₹{tech_info['ma50']:,.2f}")
+    snap1.metric("Current Price", f"{currency_symbol}{tech_info['current_price']:,.2f}")
+    snap2.metric("20-Day MA (MA20)", f"{currency_symbol}{tech_info['ma20']:,.2f}")
+    snap3.metric("50-Day MA (MA50)", f"{currency_symbol}{tech_info['ma50']:,.2f}")
     snap4.metric("Technical Condition", tech_info['condition_label'])
     
     st.divider()
@@ -358,14 +377,24 @@ with ai_analysis_tab:
         neu_pct = sentiment_metrics['avg_neutral'] * 100
         neg_pct = sentiment_metrics['avg_negative'] * 100
         
-        st.markdown(f"🟢 **Positive:** {pos_pct:.1f}% ({sentiment_metrics['pos_count']} articles)")
+        # Validation test: Average probabilities must sum to 1.0 ± 0.001
+        if sentiment_metrics.get("total_articles", 0) > 0:
+            total_avg = sentiment_metrics['avg_positive'] + sentiment_metrics['avg_neutral'] + sentiment_metrics['avg_negative']
+            assert abs(total_avg - 1.0) < 0.001, f"Average probabilities must sum to 1.0 ± 0.001, got {total_avg}"
+            
+        st.markdown("##### 📊 Average Model Confidence")
+        m_col1, m_col2, m_col3 = st.columns(3)
+        m_col1.metric("🟢 Positive", f"{pos_pct:.1f}%")
+        m_col2.metric("🟡 Neutral", f"{neu_pct:.1f}%")
+        m_col3.metric("🔴 Negative", f"{neg_pct:.1f}%")
+        
         st.progress(min(1.0, max(0.0, pos_pct / 100)))
         
-        st.markdown(f"🟡 **Neutral:** {neu_pct:.1f}% ({sentiment_metrics['neu_count']} articles)")
-        st.progress(min(1.0, max(0.0, neu_pct / 100)))
-        
-        st.markdown(f"🔴 **Negative:** {neg_pct:.1f}% ({sentiment_metrics['neg_count']} articles)")
-        st.progress(min(1.0, max(0.0, neg_pct / 100)))
+        st.markdown("##### 🏷️ Primary Article Classifications")
+        cnt_col1, cnt_col2, cnt_col3 = st.columns(3)
+        cnt_col1.metric("Positive Articles", f"{sentiment_metrics['pos_count']}")
+        cnt_col2.metric("Neutral Articles", f"{sentiment_metrics['neu_count']}")
+        cnt_col3.metric("Negative Articles", f"{sentiment_metrics['neg_count']}")
 
     with s_col2:
         chart_fig = create_sentiment_chart(sentiment_metrics)
@@ -375,9 +404,10 @@ with ai_analysis_tab:
     st.divider()
 
     # --------------------------------------------------
-    # 3. Recent News Feed & Per-Article FinBERT Analysis
+    # 3. Recent News Feed & Per-Article Analysis
     # --------------------------------------------------
-    st.markdown("### 📰 Recent Financial News & FinBERT Classification")
+    model_label = "FinBERT" if is_finbert else "Rule-Based Lexicon (Fallback)"
+    st.markdown(f"### 📰 Recent Financial News & {model_label} Classification")
     
     if news_df is not None and not news_df.empty:
         display_news_df = news_df.copy()
@@ -386,12 +416,13 @@ with ai_analysis_tab:
         display_news_df["Neg %"] = (display_news_df["negative_probability"] * 100).map("{:.1f}%".format)
         
         table_cols = ["headline", "source", "publication_date", "Pos %", "Neu %", "Neg %", "sentiment"]
+        sent_header = f"Sentiment ({'FinBERT' if is_finbert else 'Lexicon'})"
         st.dataframe(
             display_news_df[table_cols].rename(columns={
                 "headline": "Headline",
                 "source": "Source",
                 "publication_date": "Date",
-                "sentiment": "FinBERT Sentiment"
+                "sentiment": sent_header
             }),
             use_container_width=True,
             hide_index=True
@@ -451,9 +482,22 @@ with ai_analysis_tab:
     # --------------------------------------------------
     # 5. Financial News Summarization
     # --------------------------------------------------
-    st.markdown("### 📝 Recent Financial News Summary")
+    is_ai_sum = st.session_state.get("is_ai_summary", False)
+    sum_badge = "AI-Generated Summary (BART)" if is_ai_sum else "Headline Summary (Fallback)"
+    st.markdown(f"### 📝 Recent Financial News Summary — {sum_badge}")
+    
+    if not is_ai_sum:
+        sum_err = st.session_state.get("summarizer_error", "")
+        if sum_err:
+            st.warning(f"⚠️ **Transformer Summarizer Offline:** Using extractive headline summary. Reason: `{sum_err}`")
+        else:
+            st.warning("⚠️ **Transformer Summarizer Offline:** Using extractive headline summary.")
+            
     if news_summary:
-        st.success(news_summary)
+        if is_ai_sum:
+            st.success(news_summary)
+        else:
+            st.info(news_summary)
     else:
         st.write("News summary unavailable.")
 
@@ -522,8 +566,8 @@ Performance Summary Report
 ====================================
 
 Ticker             : {ticker} ({company_name})
-Initial Capital    : ₹{capital:,.2f}
-Final Portfolio    : ₹{summary['final_portfolio']:,.2f}
+Initial Capital    : {currency_symbol}{capital:,.2f}
+Final Portfolio    : {currency_symbol}{summary['final_portfolio']:,.2f}
 Strategy Return    : {summary['strategy_return']:.2f} %
 Buy & Hold Return  : {summary['buy_hold_return']:.2f} %
 Outperformance     : {summary['outperformance']:.2f} %
@@ -559,8 +603,8 @@ Ticker                  : {ticker} ({company_name})
 
 1. HISTORICAL PERFORMANCE SUMMARY
 ------------------------------------------------------
-Initial Capital         : ₹{capital:,.2f}
-Final Portfolio Value   : ₹{summary['final_portfolio']:,.2f}
+Initial Capital         : {currency_symbol}{capital:,.2f}
+Final Portfolio Value   : {currency_symbol}{summary['final_portfolio']:,.2f}
 Strategy Return         : {summary['strategy_return']:.2f} %
 Buy & Hold Return       : {summary['buy_hold_return']:.2f} %
 Outperformance          : {summary['outperformance']:.2f} %
@@ -568,9 +612,9 @@ Total Signals           : {int(summary['signals'])}
 
 2. CURRENT TECHNICAL CONDITION
 ------------------------------------------------------
-Latest Price            : ₹{summary['latest_price']:.2f}
-20-Day Moving Average   : ₹{df['MA20'].iloc[-1]:.2f}
-50-Day Moving Average   : ₹{df['MA50'].iloc[-1]:.2f}
+Latest Price            : {currency_symbol}{summary['latest_price']:.2f}
+20-Day Moving Average   : {currency_symbol}{df['MA20'].iloc[-1]:.2f}
+50-Day Moving Average   : {currency_symbol}{df['MA50'].iloc[-1]:.2f}
 Technical Trend         : {tech_info['condition_label']}
 
 3. FINANCIAL NEWS SENTIMENT ANALYSIS
